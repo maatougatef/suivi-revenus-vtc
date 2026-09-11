@@ -11,6 +11,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#14171C;
@@ -104,6 +107,16 @@
   .plat-row input{width:80px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px;font-size:14px;}
   .plat-row .plat-del{background:none;border:none;color:var(--text-faint);font-size:16px;}
 
+  .login-screen{
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .login-box{ width:100%; max-width:360px; }
+  .login-box h1{ font-size:24px; font-weight:600; margin:0 0 6px; }
+  .login-box .dot{ color:var(--amber); }
+  .login-sub{ font-size:13px; color:var(--text-muted); margin:0 0 22px; line-height:1.5; }
+  .login-error{ font-size:12px; color:var(--red); min-height:16px; margin:2px 0 10px; }
+  .account-note{ font-size:12px; color:var(--text-faint); text-align:center; margin:4px 0 10px; }
+
   .list-item{
     display:flex;justify-content:space-between;align-items:center;
     padding:13px 4px;border-bottom:1px solid var(--line);
@@ -150,6 +163,20 @@
 </style>
 </head>
 <body>
+
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <h1>Compteur<span class="dot">.</span></h1>
+    <p class="login-sub">Connecte-toi pour retrouver tes données sur n'importe quel appareil.</p>
+    <div class="field"><label>Email</label><input type="email" id="loginEmail" placeholder="toi@exemple.com"></div>
+    <div class="field"><label>Mot de passe</label><input type="password" id="loginPassword" placeholder="••••••••"></div>
+    <p class="login-error" id="loginError"></p>
+    <button class="btn-add" id="btnSignIn">Se connecter</button>
+    <button class="btn-export" id="btnSignUp" style="margin-top:10px;">Créer un compte</button>
+  </div>
+</div>
+
+<div id="appRoot" style="display:none;">
 
 <header class="top">
   <div class="brand"><h1>Compteur<span class="dot">.</span></h1></div>
@@ -252,6 +279,8 @@
       <button class="btn-add" id="saveSettings">Enregistrer</button>
     </div>
   </div>
+  <p class="account-note" id="accountNote"></p>
+  <button class="btn-export" id="btnSignOut" style="border-color:#8A4A3A; color:#E2673D;">Se déconnecter</button>
 </section>
 
 </main>
@@ -262,22 +291,98 @@
   <button class="tab-btn" data-tab="bilan">Bilan</button>
 </nav>
 
+</div><!-- /#appRoot -->
+
 <script>
 const fmt = n => (Math.round(n*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2}) + ' €';
 const todayISO = () => new Date().toISOString().slice(0,10);
+
+// ---------------- Firebase (connexion + synchronisation) ----------------
+const firebaseConfig = {
+  apiKey: "AIzaSyDPLN-VBt--MR-SWCQPM0pCwKsOq1xUhiM",
+  authDomain: "suivi-vtc-704cb.firebaseapp.com",
+  projectId: "suivi-vtc-704cb",
+  storageBucket: "suivi-vtc-704cb.firebasestorage.app",
+  messagingSenderId: "1075833751123",
+  appId: "1:1075833751123:web:1b438dfa3fefee506ee8a6"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+let currentUser = null;
+
+const storage = {
+  get: async (key) => {
+    if(!currentUser) return null;
+    const snap = await db.collection('users').doc(currentUser.uid).get();
+    if(!snap.exists) return null;
+    const data = snap.data();
+    return data[key]!=null ? {value: data[key]} : null;
+  },
+  set: async (key, value) => {
+    if(!currentUser) return null;
+    await db.collection('users').doc(currentUser.uid).set({[key]: value}, {merge:true});
+    return {key, value};
+  }
+};
+
+function showLogin(){
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('appRoot').style.display = 'none';
+}
+function showApp(){
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appRoot').style.display = 'block';
+  const note = document.getElementById('accountNote');
+  if(note) note.textContent = 'Connecté en tant que ' + (currentUser ? currentUser.email : '');
+}
+function loginErr(msg){ document.getElementById('loginError').textContent = msg; }
+
+document.getElementById('btnSignIn').addEventListener('click', async ()=>{
+  loginErr('');
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPassword').value;
+  try{ await auth.signInWithEmailAndPassword(email, pass); }
+  catch(e){ loginErr(translateAuthError(e)); }
+});
+document.getElementById('btnSignUp').addEventListener('click', async ()=>{
+  loginErr('');
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPassword').value;
+  try{ await auth.createUserWithEmailAndPassword(email, pass); }
+  catch(e){ loginErr(translateAuthError(e)); }
+});
+document.getElementById('btnSignOut').addEventListener('click', async ()=>{
+  await auth.signOut();
+});
+function translateAuthError(e){
+  const map = {
+    'auth/invalid-email':'Adresse email invalide.',
+    'auth/user-not-found':'Aucun compte avec cet email — crée un compte.',
+    'auth/wrong-password':'Mot de passe incorrect.',
+    'auth/email-already-in-use':'Un compte existe déjà avec cet email — connecte-toi.',
+    'auth/weak-password':'Mot de passe trop court (6 caractères minimum).',
+    'auth/invalid-credential':'Email ou mot de passe incorrect.'
+  };
+  return map[e.code] || ('Erreur : ' + e.message);
+}
+
+auth.onAuthStateChanged(async (user)=>{
+  if(user){
+    currentUser = user;
+    showApp();
+    await loadAll();
+  } else {
+    currentUser = null;
+    showLogin();
+  }
+});
 
 let revenus = [];
 let charges = [];
 let settings = { rates:{ "Bolt":23.8675, "Uber":25.27 }, urssaf:21.2, cfp:0.3, plafond:77700 };
 let viewMonth = new Date().getMonth();
 let viewYear = new Date().getFullYear();
-
-// Stockage local du navigateur (fonctionne une fois le fichier hébergé, contrairement à window.storage
-// qui n'existe que dans l'aperçu Claude).
-const storage = {
-  get: async (key) => { const v = localStorage.getItem('uberapp:'+key); return v!=null ? {value:v} : null; },
-  set: async (key, value) => { localStorage.setItem('uberapp:'+key, value); return {key, value}; }
-};
 
 async function loadAll(){
   try{
@@ -693,8 +798,6 @@ function exportToExcel(){
   const today = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Suivi_Revenus_Charges_Uber_${today}.xlsx`, {cellDates:true, cellStyles:true});
 }
-
-loadAll();
 </script>
 </body>
 </html>
