@@ -272,21 +272,28 @@ let settings = { rates:{ "Bolt":23.8675, "Uber":25.27 }, urssaf:21.2, cfp:0.3, p
 let viewMonth = new Date().getMonth();
 let viewYear = new Date().getFullYear();
 
+// Stockage local du navigateur (fonctionne une fois le fichier hébergé, contrairement à window.storage
+// qui n'existe que dans l'aperçu Claude).
+const storage = {
+  get: async (key) => { const v = localStorage.getItem('uberapp:'+key); return v!=null ? {value:v} : null; },
+  set: async (key, value) => { localStorage.setItem('uberapp:'+key, value); return {key, value}; }
+};
+
 async function loadAll(){
   try{
-    const r = await window.storage.get('revenus');
+    const r = await storage.get('revenus');
     revenus = r ? JSON.parse(r.value) : [];
   }catch(e){ revenus = []; }
   try{
-    const c = await window.storage.get('charges');
+    const c = await storage.get('charges');
     charges = c ? JSON.parse(c.value) : [];
   }catch(e){ charges = []; }
-  try{ const s = await window.storage.get('settings'); if(s) settings = JSON.parse(s.value); }catch(e){}
+  try{ const s = await storage.get('settings'); if(s) settings = JSON.parse(s.value); }catch(e){}
   render();
 }
-async function saveRevenus(){ try{ await window.storage.set('revenus', JSON.stringify(revenus)); }catch(e){ console.error(e); } }
-async function saveCharges(){ try{ await window.storage.set('charges', JSON.stringify(charges)); }catch(e){ console.error(e); } }
-async function saveSettingsFn(){ try{ await window.storage.set('settings', JSON.stringify(settings)); }catch(e){ console.error(e); } }
+async function saveRevenus(){ try{ await storage.set('revenus', JSON.stringify(revenus)); }catch(e){ console.error(e); } }
+async function saveCharges(){ try{ await storage.set('charges', JSON.stringify(charges)); }catch(e){ console.error(e); } }
+async function saveSettingsFn(){ try{ await storage.set('settings', JSON.stringify(settings)); }catch(e){ console.error(e); } }
 
 document.getElementById('revDate').value = todayISO();
 document.getElementById('chgDate').value = todayISO();
