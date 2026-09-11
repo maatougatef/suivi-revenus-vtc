@@ -180,9 +180,10 @@
       <div class="field"><label>Date</label><input type="date" id="revDate"></div>
       <div class="field"><label>Plateforme</label><select id="revPlatform"></select></div>
     </div>
+    <div class="field"><label>Nb courses</label><input type="number" id="revNb" placeholder="0" min="0"></div>
     <div class="row2">
-      <div class="field"><label>Nb courses</label><input type="number" id="revNb" placeholder="0" min="0"></div>
       <div class="field"><label>Montant brut (€)</label><input type="number" step="0.01" id="revBrut" placeholder="0.00"></div>
+      <div class="field"><label>Montant que je gagne (€)</label><input type="number" step="0.01" id="revNet" placeholder="0.00"></div>
     </div>
     <button class="btn-add" id="addRevenu">Ajouter</button>
   </div>
@@ -271,50 +272,16 @@ let settings = { rates:{ "Bolt":23.8675, "Uber":25.27 }, urssaf:21.2, cfp:0.3, p
 let viewMonth = new Date().getMonth();
 let viewYear = new Date().getFullYear();
 
-// Données initiales reprises du fichier Excel transmis (chargées une seule fois, si l'appli est vide)
-const SEED_REVENUS = [
-  {date:"2026-02-28", platform:"Bolt", nb:0, brut:458.30},
-  {date:"2026-03-31", platform:"Bolt", nb:0, brut:1452.40},
-  {date:"2026-03-31", platform:"Uber", nb:0, brut:2421.25},
-  {date:"2026-04-30", platform:"Uber", nb:0, brut:2843.96},
-  {date:"2026-04-30", platform:"Bolt", nb:0, brut:681.10},
-  {date:"2026-05-31", platform:"Uber", nb:0, brut:1607.55},
-  {date:"2026-05-31", platform:"Bolt", nb:0, brut:1015.00},
-  {date:"2026-06-30", platform:"Uber", nb:0, brut:3065.92},
-  {date:"2026-06-30", platform:"Bolt", nb:0, brut:862.30},
-  {date:"2026-07-31", platform:"Uber", nb:0, brut:2977.62},
-  {date:"2026-08-31", platform:"Uber", nb:0, brut:1461.40}
-];
-const SEED_CHARGES = [
-  {date:"2026-02-28", cat:"Autres", desc:"", montant:66.53},
-  {date:"2026-03-31", cat:"Autres", desc:"", montant:1436.10},
-  {date:"2026-04-30", cat:"Autres", desc:"", montant:1762.12},
-  {date:"2026-05-31", cat:"Autres", desc:"", montant:2778.80},
-  {date:"2026-06-30", cat:"Autres", desc:"", montant:1341.50},
-  {date:"2026-07-31", cat:"Autres", desc:"", montant:2143.44},
-  {date:"2026-08-31", cat:"Autres", desc:"", montant:515.90},
-  {date:"2026-09-01", cat:"Frais bancaires", desc:"", montant:8.00},
-  {date:"2026-09-03", cat:"Entretien véhicule", desc:"Filtre Habitacle", montant:29.04}
-];
-
 async function loadAll(){
-  let firstRun = false;
   try{
     const r = await window.storage.get('revenus');
-    if(r){ revenus = JSON.parse(r.value); } else { revenus = []; firstRun = true; }
-  }catch(e){ revenus = []; firstRun = true; }
+    revenus = r ? JSON.parse(r.value) : [];
+  }catch(e){ revenus = []; }
   try{
     const c = await window.storage.get('charges');
     charges = c ? JSON.parse(c.value) : [];
   }catch(e){ charges = []; }
   try{ const s = await window.storage.get('settings'); if(s) settings = JSON.parse(s.value); }catch(e){}
-
-  if(firstRun){
-    revenus = SEED_REVENUS.map((e,i)=>({id:Date.now()+i, ...e}));
-    charges = SEED_CHARGES.map((e,i)=>({id:Date.now()+1000+i, ...e}));
-    await saveRevenus(); await saveCharges(); await saveSettingsFn();
-    viewYear = 2026; viewMonth = 8; // ouvre sur septembre 2026, dernier mois avec des données
-  }
   render();
 }
 async function saveRevenus(){ try{ await window.storage.set('revenus', JSON.stringify(revenus)); }catch(e){ console.error(e); } }
@@ -345,13 +312,28 @@ document.getElementById('addRevenu').addEventListener('click', async ()=>{
   const platform = document.getElementById('revPlatform').value;
   const nb = parseFloat(document.getElementById('revNb').value)||0;
   const brut = parseFloat(document.getElementById('revBrut').value);
-  if(!date || !brut || !platform){ return; }
-  revenus.push({id:Date.now(), date, platform, nb, brut});
+  const net = parseFloat(document.getElementById('revNet').value);
+  if(!date || !brut || !platform || isNaN(net)){ return; }
+  revenus.push({id:Date.now(), date, platform, nb, brut, net});
   document.getElementById('revBrut').value='';
+  document.getElementById('revNet').value='';
   document.getElementById('revNb').value='';
+  document.getElementById('revNet').dataset.touched='';
   await saveRevenus();
   render();
 });
+// Pré-remplit le montant net avec une estimation (taux moyen de la plateforme), modifiable avant d'ajouter
+function suggestNet(){
+  const brut = parseFloat(document.getElementById('revBrut').value);
+  const platform = document.getElementById('revPlatform').value;
+  const netField = document.getElementById('revNet');
+  if(!isNaN(brut) && platform && settings.rates[platform]!=null && !netField.dataset.touched){
+    netField.value = round2(brut*(1-settings.rates[platform]/100));
+  }
+}
+document.getElementById('revBrut').addEventListener('input', suggestNet);
+document.getElementById('revPlatform').addEventListener('change', suggestNet);
+document.getElementById('revNet').addEventListener('input', ()=>{ document.getElementById('revNet').dataset.touched='1'; });
 
 document.getElementById('addCharge').addEventListener('click', async ()=>{
   const date = document.getElementById('chgDate').value;
@@ -410,7 +392,12 @@ document.getElementById('importFile').addEventListener('change', async (evt)=>{
       const row = revRows[i];
       if(!row || !row[0] || row[3]==null || row[3]==='') continue;
       const d = row[0] instanceof Date ? row[0] : new Date(row[0]);
-      newRevenus.push({id:Date.now()+i, date:d.toISOString().slice(0,10), platform:row[1]||'', nb:Number(row[2])||0, brut:Number(row[3])});
+      const brutVal = Number(row[3]);
+      const rateGuess = newRates[row[1]] ?? settings.rates[row[1]];
+      const netVal = (row[5]!=null && row[5]!=='' && !isNaN(Number(row[5])))
+        ? Number(row[5])
+        : (rateGuess!=null ? round2(brutVal*(1-rateGuess/100)) : brutVal);
+      newRevenus.push({id:Date.now()+i, date:d.toISOString().slice(0,10), platform:row[1]||'', nb:Number(row[2])||0, brut:brutVal, net:netVal});
     }
     const chgSheet = wbIn.Sheets['Charges'];
     const newCharges = [];
@@ -483,18 +470,15 @@ function render(){
   document.getElementById('rateCfp').value = settings.cfp;
   document.getElementById('ratePlafond').value = settings.plafond;
 
-  const rateFor = p => (settings.rates[p]!=null ? settings.rates[p] : 0);
-
   // Revenus list
   const mRev = monthEntries(revenus,'date').sort((a,b)=> new Date(b.date)-new Date(a.date));
   const revList = document.getElementById('revenusList');
   revList.innerHTML = mRev.length ? '' : '<div class="empty">Aucun revenu ce mois-ci. Ajoute ta première course ci-dessus.</div>';
   let caBrut=0, commissionTotal=0;
   mRev.forEach(e=>{
+    const net = e.net!=null ? e.net : e.brut;
     caBrut += e.brut;
-    const commission = e.brut*rateFor(e.platform)/100;
-    commissionTotal += commission;
-    const net = e.brut - commission;
+    commissionTotal += (e.brut - net);
     const div = document.createElement('div');
     div.className='list-item';
     div.innerHTML = `<div class="li-left"><div class="li-title">${new Date(e.date).toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})} — ${e.platform}</div><div class="li-sub">Net ${fmt(net)}</div></div>
@@ -623,14 +607,13 @@ function exportToExcel(){
   ["Date","Plateforme","Nb courses","Montant brut (€)","Commission (auto, €)","Montant net encaissé (€)","Notes"]
     .forEach((h,i)=> setStr(revWS,3,i+1,h, S_HEADER));
   let r = DATA_START;
-  const lastRateCol = XLSX.utils.encode_col(4+Math.max(platNames.length,1)-1);
   revSorted.forEach(e=>{
     setDate(revWS,r,1,e.date, S_CELL);
     setStr(revWS,r,2,e.platform, S_CELL);
     setNum(revWS,r,3,e.nb||0, S_CELL);
     setCurr(revWS,r,4,round2(e.brut), S_CELL);
-    setFormula(revWS,r,5, `D${r}*INDEX($E$2:$${lastRateCol}$2,MATCH(B${r},$E$1:$${lastRateCol}$1,0))`, S_CELL, '#,##0.00" €"');
-    setFormula(revWS,r,6, `D${r}-E${r}`, S_CELL, '#,##0.00" €"');
+    setFormula(revWS,r,5, `D${r}-F${r}`, S_CELL, '#,##0.00" €"');
+    setCurr(revWS,r,6,round2(e.net!=null?e.net:e.brut), S_INPUT_CELL);
     setStr(revWS,r,7,"", S_CELL);
     r++;
   });
