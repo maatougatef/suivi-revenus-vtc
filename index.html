@@ -201,6 +201,11 @@
 <main>
 
 <section id="tab-revenus" class="active">
+<div class="add-form" style="margin-top: 10px;">
+  <h3>Import rapide Uber</h3>
+  <button class="btn-export" id="btnImportUberCSV">📄 Importer un fichier CSV Uber</button>
+  <input type="file" id="uberCsvFile" accept=".csv" style="display:none">
+</div>
   <div class="add-form">
     <h3>Nouvelle course / journée</h3>
     <div class="row2">
@@ -226,7 +231,7 @@
       <select id="chgCat">
         <option>Carburant</option>
         <option>Entretien véhicule</option>
-        <option>Frais bancaires</option>
+		<option>Frais bancaires</option>
         <option>Assurance</option>
         <option>Péage / Stationnement</option>
         <option>Lavage véhicule</option>
@@ -799,6 +804,83 @@ function exportToExcel(){
   const today = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Suivi_Revenus_Charges_Uber_${today}.xlsx`, {cellDates:true, cellStyles:true});
 }
+
+
+function parseUberCSV(fileContent) {
+  const lines = fileContent.split('\n');
+  if (lines.length < 2) return [];
+
+  // Lecture des en-têtes (séparateur virgule ou point-virgule selon le pays)
+  const separator = lines[0].includes(';') ? ';' : ',';
+  const headers = lines[0].split(separator).map(h => h.trim().replace(/"/g, ''));
+
+  // Détection des index des colonnes clés d'Uber
+  const dateIdx = headers.findIndex(h => /date|horodatage|time/i.test(h));
+  const brutIdx = headers.findIndex(h => /brut|total|fare|prix/i.test(h));
+  const netIdx = headers.findIndex(h => /net|gain|payout|earnings/i.test(h));
+
+  const importedRevenus = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const cols = lines[i].split(separator).map(c => c.trim().replace(/"/g, ''));
+
+    const rawDate = cols[dateIdx];
+    const brut = parseFloat(cols[brutIdx]?.replace(',', '.'));
+    const net = parseFloat(cols[netIdx]?.replace(',', '.'));
+
+    if (rawDate && !isNaN(brut)) {
+      // Conversion de la date au format YYYY-MM-DD
+      const parsedDate = new Date(rawDate).toISOString().slice(0, 10);
+
+      importedRevenus.push({
+        id: Date.now() + i,
+        date: parsedDate,
+        platform: 'Uber',
+        nb: 1,
+        brut: round2(brut),
+        net: !isNaN(net) ? round2(net) : round2(brut * (1 - (settings.rates['Uber'] || 25) / 100))
+      });
+    }
+  }
+
+  return importedRevenus;
+}
+
+document.getElementById('btnImportUberCSV').addEventListener('click', () => {
+  document.getElementById('uberCsvFile').click();
+});
+
+document.getElementById('uberCsvFile').addEventListener('change', async (evt) => {
+  const file = evt.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const csvData = e.target.result;
+      const newEntries = parseUberCSV(csvData);
+
+      if (newEntries.length === 0) {
+        alert("Aucune course valide n'a été trouvée dans ce fichier.");
+        return;
+      }
+
+      // Fusion avec les revenus existants et sauvegarde
+      revenus = [...revenus, ...newEntries];
+      await saveRevenus();
+      render();
+
+      alert(`${newEntries.length} course(s) Uber importée(s) avec succès !`);
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors de la lecture du fichier CSV.");
+    }
+  };
+
+  reader.readAsText(file);
+  evt.target.value = ''; // Réinitialisation du champ file
+});
 </script>
 </body>
 </html>
