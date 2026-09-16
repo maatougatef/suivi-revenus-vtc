@@ -201,11 +201,6 @@
 <main>
 
 <section id="tab-revenus" class="active">
-<div class="add-form" style="margin-top: 10px;">
-  <h3>Import rapide Uber</h3>
-  <button class="btn-export" id="btnImportUberCSV">📄 Importer un fichier CSV Uber</button>
-  <input type="file" id="uberCsvFile" accept=".csv" style="display:none">
-</div>
   <div class="add-form">
     <h3>Nouvelle course / journée</h3>
     <div class="row2">
@@ -231,7 +226,6 @@
       <select id="chgCat">
         <option>Carburant</option>
         <option>Entretien véhicule</option>
-		<option>Frais bancaires</option>
         <option>Assurance</option>
         <option>Péage / Stationnement</option>
         <option>Lavage véhicule</option>
@@ -269,6 +263,23 @@
   <button class="btn-export" id="importExcel">⇧ Importer un fichier Excel</button>
   <input type="file" id="importFile" accept=".xlsx" style="display:none">
   <p class="export-note">Réimporte un fichier au même format (Revenus / Charges / URSSAF) — remplace les données actuelles de l'appli par celles du fichier.</p>
+  <button class="btn-export" id="importCsv">⇧ Comparer avec un CSV Uber</button>
+  <input type="file" id="importCsvFile" accept=".csv" style="display:none">
+  <p class="export-note">Lit un relevé CSV Uber pour comparer son CA brut avec ce que tu as saisi — n'ajoute et ne modifie aucune donnée dans l'appli.</p>
+  <div class="add-form" id="csvMapBox" style="display:none;">
+    <h3>Vérifie la correspondance des colonnes</h3>
+    <div class="field"><label>Colonne Date</label><select id="csvColDate"></select></div>
+    <div class="field"><label>Colonne Montant brut</label><select id="csvColBrut"></select></div>
+    <p class="export-note" id="csvPreviewNote" style="margin:4px 0 12px;"></p>
+    <button class="btn-add" id="csvConfirm">Comparer</button>
+    <button class="btn-export" id="csvCancel" style="margin-top:8px;">Annuler</button>
+  </div>
+  <div class="bilan-card" id="csvCompareCard" style="display:none;">
+    <p class="bilan-title">Comparaison CSV — <span id="csvCompareMonth"></span></p>
+    <div class="bilan-row"><span>CA brut (CSV importé)</span><span class="v" id="cCsvBrut">0,00 €</span></div>
+    <div class="bilan-row"><span>CA brut (saisi dans l'appli)</span><span class="v" id="cAppBrut">0,00 €</span></div>
+    <div class="bilan-row"><span>Écart</span><span class="v" id="cEcart">0,00 €</span></div>
+  </div>
   <div class="settings-toggle" id="settingsToggle">Réglages des taux ▾</div>
   <div class="settings-box" id="settingsBox">
     <div class="add-form">
@@ -548,6 +559,82 @@ document.getElementById('importFile').addEventListener('change', async (evt)=>{
   evt.target.value = '';
 });
 
+// ---------------- Import CSV Uber ----------------
+let csvParsedRows = []; // [[col1,col2,...], ...] toutes lignes (headers inclus en row 0)
+let csvHeaders = [];
+
+function parseCSV(text){
+  // Détecte le séparateur (virgule ou point-virgule, fréquent dans les exports FR)
+  const sep = (text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length) ? ';' : ',';
+  const wbIn = XLSX.read(text, {type:'string', raw:true, FS:sep});
+  const sheetName = wbIn.SheetNames[0];
+  return XLSX.utils.sheet_to_json(wbIn.Sheets[sheetName], {header:1, raw:true});
+}
+
+function guessColumn(headers, keywords){
+  const idx = headers.findIndex(h => keywords.some(k => String(h).toLowerCase().includes(k)));
+  return idx>=0 ? idx : 0;
+}
+
+document.getElementById('importCsv').addEventListener('click', ()=> document.getElementById('importCsvFile').click());
+document.getElementById('importCsvFile').addEventListener('change', async (evt)=>{
+  const file = evt.target.files[0];
+  if(!file) return;
+  const text = await file.text();
+  try{
+    csvParsedRows = parseCSV(text).filter(r=> r && r.length && r.some(c=>c!=null && c!==''));
+    if(csvParsedRows.length < 2){ throw new Error('Fichier vide ou illisible'); }
+    csvHeaders = csvParsedRows[0].map(h=>String(h));
+    const dateSel = document.getElementById('csvColDate');
+    const brutSel = document.getElementById('csvColBrut');
+    [dateSel, brutSel].forEach(sel=>{
+      sel.innerHTML = csvHeaders.map((h,i)=>`<option value="${i}">${h}</option>`).join('');
+    });
+    dateSel.value = guessColumn(csvHeaders, ['date','time','heure','jour']);
+    brutSel.value = guessColumn(csvHeaders, ['fare','gross','brut','total','montant du trajet','price']);
+    document.getElementById('csvPreviewNote').textContent = (csvParsedRows.length-1) + ' ligne(s) détectée(s) dans le fichier.';
+    document.getElementById('csvMapBox').style.display = 'block';
+  }catch(err){
+    console.error(err);
+    alert("Le fichier CSV n'a pas pu être lu.");
+  }
+  evt.target.value = '';
+});
+
+document.getElementById('csvCancel').addEventListener('click', ()=>{
+  document.getElementById('csvMapBox').style.display = 'none';
+  csvParsedRows = []; csvHeaders = [];
+});
+
+let csvByMonth = null; // {'2026-09': totalBrut, ...} — jamais sauvegardé, juste pour comparaison à l'écran
+
+document.getElementById('csvConfirm').addEventListener('click', ()=>{
+  const dateCol = Number(document.getElementById('csvColDate').value);
+  const brutCol = Number(document.getElementById('csvColBrut').value);
+  const byMonth = {};
+  let skipped = 0;
+  for(let i=1;i<csvParsedRows.length;i++){
+    const row = csvParsedRows[i];
+    const rawDate = row[dateCol];
+    const rawBrut = row[brutCol];
+    if(rawDate==null || rawBrut==null || rawBrut===''){ skipped++; continue; }
+    let d;
+    if(rawDate instanceof Date) d = rawDate;
+    else if(typeof rawDate === 'number') d = new Date(Math.round((rawDate-25569)*86400*1000)); // série Excel
+    else d = new Date(String(rawDate));
+    if(isNaN(d.getTime())){ skipped++; continue; }
+    const brut = parseFloat(String(rawBrut).replace(',','.').replace(/[^\d.\-]/g,''));
+    if(isNaN(brut)){ skipped++; continue; }
+    const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    byMonth[key] = (byMonth[key]||0) + brut;
+  }
+  csvByMonth = byMonth;
+  document.getElementById('csvMapBox').style.display = 'none';
+  csvParsedRows = []; csvHeaders = [];
+  render();
+  if(skipped) console.warn(skipped + ' ligne(s) ignorée(s) lors de la comparaison CSV.');
+});
+
 function monthEntries(arr, dateKey){
   return arr.filter(e=>{
     const d = new Date(e[dateKey]);
@@ -656,6 +743,23 @@ function render(){
   const caAnnuel = annualRev.reduce((s,e)=>s+e.brut,0);
   document.getElementById('bCaAnnuel').textContent = fmt(caAnnuel);
   document.getElementById('bPlafondPct').textContent = ((caAnnuel/settings.plafond)*100).toFixed(1).replace('.',',') + ' %';
+
+  // Comparaison CSV (si un fichier a été comparé)
+  const compareCard = document.getElementById('csvCompareCard');
+  if(csvByMonth){
+    const monthKey = viewYear+'-'+String(viewMonth+1).padStart(2,'0');
+    const csvBrut = csvByMonth[monthKey] || 0;
+    const ecart = csvBrut - caBrut;
+    document.getElementById('csvCompareMonth').textContent = monthNames[viewMonth] + ' ' + viewYear;
+    document.getElementById('cCsvBrut').textContent = fmt(csvBrut);
+    document.getElementById('cAppBrut').textContent = fmt(caBrut);
+    const ecartEl = document.getElementById('cEcart');
+    ecartEl.textContent = (ecart>=0?'+':'') + fmt(ecart);
+    ecartEl.style.color = Math.abs(ecart) < 0.01 ? 'var(--green)' : 'var(--red)';
+    compareCard.style.display = 'block';
+  } else {
+    compareCard.style.display = 'none';
+  }
 }
 
 document.getElementById('exportExcel').addEventListener('click', exportToExcel);
@@ -804,83 +908,6 @@ function exportToExcel(){
   const today = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Suivi_Revenus_Charges_Uber_${today}.xlsx`, {cellDates:true, cellStyles:true});
 }
-
-
-function parseUberCSV(fileContent) {
-  const lines = fileContent.split('\n');
-  if (lines.length < 2) return [];
-
-  // Lecture des en-têtes (séparateur virgule ou point-virgule selon le pays)
-  const separator = lines[0].includes(';') ? ';' : ',';
-  const headers = lines[0].split(separator).map(h => h.trim().replace(/"/g, ''));
-
-  // Détection des index des colonnes clés d'Uber
-  const dateIdx = headers.findIndex(h => /date|horodatage|time/i.test(h));
-  const brutIdx = headers.findIndex(h => /brut|total|fare|prix/i.test(h));
-  const netIdx = headers.findIndex(h => /net|gain|payout|earnings/i.test(h));
-
-  const importedRevenus = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const cols = lines[i].split(separator).map(c => c.trim().replace(/"/g, ''));
-
-    const rawDate = cols[dateIdx];
-    const brut = parseFloat(cols[brutIdx]?.replace(',', '.'));
-    const net = parseFloat(cols[netIdx]?.replace(',', '.'));
-
-    if (rawDate && !isNaN(brut)) {
-      // Conversion de la date au format YYYY-MM-DD
-      const parsedDate = new Date(rawDate).toISOString().slice(0, 10);
-
-      importedRevenus.push({
-        id: Date.now() + i,
-        date: parsedDate,
-        platform: 'Uber',
-        nb: 1,
-        brut: round2(brut),
-        net: !isNaN(net) ? round2(net) : round2(brut * (1 - (settings.rates['Uber'] || 25) / 100))
-      });
-    }
-  }
-
-  return importedRevenus;
-}
-
-document.getElementById('btnImportUberCSV').addEventListener('click', () => {
-  document.getElementById('uberCsvFile').click();
-});
-
-document.getElementById('uberCsvFile').addEventListener('change', async (evt) => {
-  const file = evt.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const csvData = e.target.result;
-      const newEntries = parseUberCSV(csvData);
-
-      if (newEntries.length === 0) {
-        alert("Aucune course valide n'a été trouvée dans ce fichier.");
-        return;
-      }
-
-      // Fusion avec les revenus existants et sauvegarde
-      revenus = [...revenus, ...newEntries];
-      await saveRevenus();
-      render();
-
-      alert(`${newEntries.length} course(s) Uber importée(s) avec succès !`);
-    } catch (err) {
-      console.error(err);
-      alert("Erreur lors de la lecture du fichier CSV.");
-    }
-  };
-
-  reader.readAsText(file);
-  evt.target.value = ''; // Réinitialisation du champ file
-});
 </script>
 </body>
 </html>
